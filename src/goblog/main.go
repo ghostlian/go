@@ -1,17 +1,69 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"text/template"
+	"time"
 	"unicode/utf8"
 
+	// _ "github.com/go-sql-driver/mysql" //匿名方式引入
+	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 )
 
 var router = mux.NewRouter()
+var db *sql.DB
+
+func initDB() {
+
+	var err error
+	config := mysql.Config{
+		User:                 "root",
+		Passwd:               "123456",
+		Addr:                 "127.0.0.1:3306",
+		Net:                  "tcp",
+		DBName:               "goblog",
+		AllowNativePasswords: true,
+	}
+	//准备数据库连接池
+	db, err = sql.Open("mysql", config.FormatDSN())
+	checkError(err)
+
+	//设置最大连接数
+	db.SetMaxOpenConns(25)
+	//设置最大空闲连接数
+	db.SetMaxIdleConns(15)
+	// 设置每个链接的过期时间
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	// //尝试链接，失败会报错
+	// err = db.Ping()
+	// checkError(err)
+
+}
+
+func checkError(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func createTables() {
+	createArticlesSQL := `CREATE TABLE IF NOT EXISTS articles(
+		id bigint(20) PRIMARY KEY AUTO_INCREMENT NOT NULL,
+		title varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+		body longtext COLLATE utf8mb4_unicode_ci
+		); `
+
+	_, err := db.Exec(createArticlesSQL)
+	checkError(err)
+}
 
 // 中间件
 func forceHTMLMiddleware(next http.Handler) http.Handler {
@@ -94,35 +146,16 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 检查是否有错误
 	if len(errors) == 0 {
-		fmt.Fprint(w, "验证通过!<br>")
-		fmt.Fprintf(w, "title 的值为: %v <br>", title)
-		fmt.Fprintf(w, "title 的长度为: %v <br>", len(title))
-		fmt.Fprintf(w, "body 的值为: %v <br>", body)
-		fmt.Fprintf(w, "body 的长度为: %v <br>", len(body))
+		lastInsertID, err := saveArticleToDB(title, body)
+		if lastInsertID > 0 {
+			fmt.Fprint(w, "插入成功，ID 为"+strconv.FormatInt(lastInsertID, 10))
+		} else {
+			checkError(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "500 服务器内部错误")
+		}
 	} else {
 
-		html := `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <title>创建文章 —— 我的技术博客</title>
-    <style type="text/css">.error {color: red;}</style>
-</head>
-<body>
-    <form action="{{ .URL }}" method="post">
-        <p><input type="text" name="title" value="{{ .Title }}"></p>
-        {{ with .Errors.title }}
-        <p class="error">{{ . }}</p>
-        {{ end }}
-        <p><textarea name="body" cols="30" rows="10">{{ .Body }}</textarea></p>
-        {{ with .Errors.body }}
-        <p class="error">{{ . }}</p>
-        {{ end }}
-        <p><button type="submit">提交</button></p>
-    </form>
-</body>
-</html>
-`
 		storeURL, _ := router.Get("articles.store").URL()
 
 		data := ArticlesFormData{
@@ -131,7 +164,7 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 			URL:    storeURL,
 			Errors: errors,
 		}
-		tmpl, err := template.New("create-form").Parse(html)
+		tmpl, err := template.ParseFiles("resources/views/articles/create.gohtml")
 		if err != nil {
 			panic(err)
 		}
@@ -154,28 +187,63 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "title 的值为: %v", title)
 }
 
+// 返回插入的自增ID和错误信息
+func saveArticleToDB(title string, body string) (int64, error) {
+	var (
+		id   int64
+		err  error
+		rs   sql.Result
+		stmt *sql.Stmt
+	)
+
+	// 1. 获取一个 prepare 声明语句
+	stmt, err = db.Prepare("INSERT INTO articles (title, body) VALUES(?,?)")
+	// 例行的错误检测
+	if err != nil {
+		return 0, err
+	}
+	// 2. 在此函数运行结束后关闭此语句，防止占用 SQL 连接
+	defer stmt.Close()
+
+	//3请求执行，传参进入绑定内容
+	rs, err = stmt.Exec(title, body)
+
+	if err != nil {
+		return 0, err
+	}
+
+	// 4插入成功地话会返回自增ID
+	if id, err = rs.LastInsertId(); id > 0 {
+		return id, nil
+	}
+	return 0, err
+
+}
+
 func articlesCreateHandler(w http.ResponseWriter, r *http.Request) {
-	html := `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <title>创建文章 —— 我的技术博客</title>
-</head>
-<body>
-    <form action="%s?test=data" method="post">
-        <p><input type="text" name="title"></p>
-        <p><textarea name="body" cols="30" rows="10"></textarea></p>
-        <p><button type="submit">提交</button></p>
-    </form>
-</body>
-</html>
-`
 	storeURL, _ := router.Get("articles.store").URL()
-	fmt.Fprintf(w, html, storeURL)
+	data := ArticlesFormData{
+		Title:  "",
+		Body:   "",
+		URL:    storeURL,
+		Errors: nil,
+	}
+
+	tmpl, err := template.ParseFiles("resources/views/articles/create.gohtml")
+	if err != nil {
+		panic(err) //加载系统错误
+	}
+
+	err = tmpl.Execute(w, data)
+	if err != nil {
+		panic(err)
+	}
+
 }
 
 func main() {
-
+	initDB()
+	createTables()
 	router.HandleFunc("/", homeHandler).Methods("GET").Name("home")
 	router.HandleFunc("/about", aboutHandler).Methods("GET").Name("about")
 
