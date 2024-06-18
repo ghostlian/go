@@ -34,7 +34,6 @@ func initDB() {
 	//准备数据库连接池
 	db, err = sql.Open("mysql", config.FormatDSN())
 	checkError(err)
-
 	//设置最大连接数
 	db.SetMaxOpenConns(25)
 	//设置最大空闲连接数
@@ -148,10 +147,6 @@ func articlesShowHandler(w http.ResponseWriter, r *http.Request) {
 		err = tmpl.Execute(w, article)
 		checkError(err)
 	}
-}
-
-func articlesIndexHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "访问文章列表")
 }
 
 func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
@@ -271,9 +266,49 @@ func articlesCreateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func articleEditHandler(w http.ResponseWriter, r *http.Request) {
+	//获取ID参数
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	//读取对应文章
+	article := Article{}
+	query := "select * from articles where id = ?"
+	err := db.QueryRow(query, id).Scan(&article.ID, &article.Title, &article.Body)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, "404 未找到")
+		} else {
+			checkError(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "500 服务器错误")
+		}
+	} else {
+		//读取成功
+		updateURL, _ := router.Get("articles.update").URL("id", id)
+		data := ArticlesFormData{
+			Title:  article.Title,
+			Body:   article.Body,
+			Errors: nil,
+			URL:    updateURL,
+		}
+
+		tmpl, err := template.ParseFiles("resources/views/articles/edit.gohtml")
+		checkError(err)
+
+		err = tmpl.Execute(w, data) //渲染页面
+		checkError(err)
+	}
 
 }
+func articlesUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprint(w, "更新文章")
+}
 
+func articlesIndexHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprint(w, "访问文章列表")
+}
 func main() {
 	initDB()
 	createTables()
