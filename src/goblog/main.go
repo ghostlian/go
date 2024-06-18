@@ -112,10 +112,42 @@ type ArticlesFormData struct {
 	Errors      map[string]string
 }
 
+// Article 对应一条文章数据
+type Article struct {
+	Title, Body string
+	ID          int64
+}
+
 func articlesShowHandler(w http.ResponseWriter, r *http.Request) {
+	//获取url参数
 	vars := mux.Vars(r)
 	id := vars["id"]
-	fmt.Fprint(w, "文章 ID："+id)
+
+	//读取对应文章
+	article := Article{}
+	query := "select * from articles where id =?"
+	err := db.QueryRow(query, id).Scan(&article.ID, &article.Title, &article.Body)
+
+	//如果出现错误
+	if err != nil {
+		if err == sql.ErrNoRows {
+			//数据未找到
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, "404notfound")
+		} else {
+			// 数据库错
+			checkError(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "500服务器内部错误")
+		}
+	} else {
+		//4. 读取成功
+		tmpl, err := template.ParseFiles("resources/views/articles/show.gohtml")
+		checkError(err)
+
+		err = tmpl.Execute(w, article)
+		checkError(err)
+	}
 }
 
 func articlesIndexHandler(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +180,7 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 	if len(errors) == 0 {
 		lastInsertID, err := saveArticleToDB(title, body)
 		if lastInsertID > 0 {
+			//formatInt() 方法来将类型为 int64 的 lastInsertID 转换为字符串。此方法的第二个参数 10 为十进制。
 			fmt.Fprint(w, "插入成功，ID 为"+strconv.FormatInt(lastInsertID, 10))
 		} else {
 			checkError(err)
@@ -181,10 +214,6 @@ func articlesStoreHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "请提供正确的数据！")
 		return
 	}
-
-	fmt.Fprintf(w, "POST PostForm: %v <br>", r.PostForm)
-	fmt.Fprintf(w, "POST Form: %v <br>", r.Form)
-	fmt.Fprintf(w, "title 的值为: %v", title)
 }
 
 // 返回插入的自增ID和错误信息
@@ -241,6 +270,10 @@ func articlesCreateHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func articleEditHandler(w http.ResponseWriter, r *http.Request) {
+
+}
+
 func main() {
 	initDB()
 	createTables()
@@ -251,7 +284,8 @@ func main() {
 	router.HandleFunc("/articles", articlesIndexHandler).Methods("GET").Name("articles.index")
 	router.HandleFunc("/articles", articlesStoreHandler).Methods("POST").Name("articles.store")
 	router.HandleFunc("/articles/create", articlesCreateHandler).Methods("GET").Name("articles.create")
-
+	router.HandleFunc("/articles/{id:[0-9]+}/edit", articleEditHandler).Methods("GET").Name("articles.edit")
+	router.HandleFunc("/articles/{id:[0-9]+}", articlesUpdateHandler).Methods("POST").Name("articles.update")
 	// 自定义404页面
 	router.NotFoundHandler = http.HandlerFunc(notFoundHandler)
 
